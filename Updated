@@ -1,0 +1,358 @@
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from scipy.io import loadmat
+from sklearn.preprocessing import scale
+from sklearn.model_selection import GridSearchCV
+from sklearn.decomposition import PCA
+from sklearn.metrics import mutual_info_score
+from matplotlib import colors
+
+# READ DATA
+
+def read_HSI():
+  X = loadmat('Indian_pines_corrected.mat')['indian_pines_corrected']
+  y = loadmat('Indian_pines_gt.mat')['indian_pines_gt']
+  print(f"X shape: {X.shape}\ny shape: {y.shape}")
+  return X, y
+
+X, y = read_HSI()
+
+# RANDOM BANDS
+
+fig, axes = plt.subplots(2, 3, figsize=(12, 6))
+
+for ax in axes.flatten():
+    q = np.random.randint(X.shape[2])
+    ax.imshow(X[:, :, q], cmap='nipy_spectral')
+    ax.axis('off')
+    ax.set_title(f'Band - {q}')
+
+plt.tight_layout()
+plt.savefig('Bands.png')
+plt.show()
+
+# GROUND TRUTH
+
+plt.figure(figsize=(10, 8))
+plt.imshow(y, cmap='nipy_spectral', aspect='auto') 
+plt.colorbar(label='Intensity')  
+plt.xlabel('Wavelengths')
+plt.title('Ground Truth') 
+plt.axis('off')
+plt.savefig('GT.png', bbox_inches='tight') 
+plt.show()
+
+
+# CONVERT DATA TO CSV
+
+def extract_pixels(X, y):
+    X_reshaped = X.reshape(-1, X.shape[2])
+    df = pd.DataFrame(data=X_reshaped, columns=[f'band{i}' for i in range(1, 1 + X.shape[2])])
+    df['class'] = y.ravel()
+
+    df.to_csv('HSI_Pines.csv', index=False)
+
+    return df
+
+df = extract_pixels(X, y)
+
+df.head()
+
+df.iloc[:, :-1].describe()
+
+X = df.iloc[:, :-1].values
+y = df.iloc[:, -1].values
+X.shape, y.shape
+
+df.dtypes
+
+len(df)
+
+# PERFORM INITIAL PCA
+
+pca = PCA(n_components = 150)
+
+principalComponents = pca.fit_transform(df.iloc[:, :-1].values)
+
+ev=pca.explained_variance_ratio_
+
+plt.figure(figsize=(12, 6))
+plt.plot(np.cumsum(ev))
+plt.xlabel('Number of components')
+plt.ylabel('Cumulative explained variance')
+
+
+plt.show()
+
+cumulative_explained_var = np.cumsum(ev)
+
+# Plot explained variance ratio
+plt.plot(ev)
+plt.xlabel('Principal Component Index')
+plt.ylabel('Explained Variance Ratio')
+plt.show()
+
+# Plot cumulative explained variance
+plt.plot(cumulative_explained_var)
+plt.xlabel('Number of Components')
+plt.ylabel('Cumulative Explained Variance')
+plt.show()
+
+# Find the index of the elbow using a heuristic
+elbow_index = np.argmax(np.diff(cumulative_explained_var) < 0.01) + 1
+
+# Get the optimal number of components
+optimal_n_components = elbow_index + 1 
+
+print(f'Optimal number of components: {optimal_n_components}')
+
+df3 = pd.DataFrame(ev, columns=['Cumulative explained variance']).cumsum()
+df3['Number of components'] = pd.Series(list(range(200)))
+
+fig = px.line(df3, x='Number of components', y='Cumulative explained variance', title='Cumulative Explained Variance')
+
+fig.update_layout(
+    xaxis_title='Number of components',  
+    yaxis_title='Cumulative Explained Variance',)
+
+fig.show()
+
+# PCA WITH OPTIMAL NUMBER OF BANDS
+
+pca = PCA(n_components = optimal_n_components)
+dt = pca.fit_transform(df.iloc[:, :-1].values)
+q = pd.concat([pd.DataFrame(data = dt), pd.DataFrame(data = y.ravel())], axis = 1)
+q.columns = [f'PC-{i}' for i in range(1, optimal_n_components + 1)] + ['class']
+
+q.head()
+
+len(q)
+
+fig, axes = plt.subplots(2, 4, figsize=(20, 10))
+
+for i, ax in enumerate(axes.flatten(), start=1):
+    column_name = f'PC-{i}'
+    if column_name in q.columns:
+        ax.imshow(q[column_name].values.reshape(145, 145), cmap='nipy_spectral')
+        ax.axis('off')
+        ax.set_title(f'Band - {i}')
+    else:
+        ax.axis('off') 
+        
+plt.savefig('PCA_Bands.png')
+plt.show()
+
+q.to_csv('IP_4_PCA.csv', index=False)
+
+# SVM ITERATIONS
+
+q1 = q.copy()
+
+x = q1[q1['class'] != 0]
+
+X = x.iloc[:, :-1].values
+
+y = x.loc[:, 'class'].values 
+
+names = ['Alfalfa',	'Corn-notill', 'Corn-mintill',	'Corn',		'Grass-pasture','Grass-trees',
+'Grass-pasture-mowed','Hay-windrowed','Oats','Soybean-notill','Soybean-mintill',
+'Soybean-clean', 'Wheat',	'Woods',	'Buildings Grass Trees Drives',	'Stone Steel Towers']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.20, random_state=11, stratify=y)
+
+svm =  SVC(C = 100, kernel = 'rbf', gamma = 'scale')
+
+svm.fit(X_train, y_train)
+
+y_pred = svm.predict(X_test)
+
+data = confusion_matrix(y_test, y_pred)
+df_cm = pd.DataFrame(data, columns=np.unique(names), index=np.unique(names))
+df_cm.index.name = 'Actual'
+df_cm.columns.name = 'Predicted'
+
+
+total_instances = df_cm.values.sum()
+
+percentages = (df_cm / total_instances) * 100
+instance_total_instance = df_cm.astype(str) + '\n(' + (df_cm / total_instances * 100).round(1).astype(str) + '%)'
+
+
+plt.figure(figsize=(12, 10))
+sns.set(font_scale=1.2)  # for label size
+sns.heatmap(df_cm, cmap="Reds", annot=instance_total_instance, annot_kws={"size": 12}, fmt='', cbar=False)
+plt.title('Confusion Matrix')
+plt.savefig('cmap.png', dpi=300)
+plt.show()
+
+data = confusion_matrix(y_test, y_pred)
+df_cm = pd.DataFrame(data, columns=np.unique(names), index = np.unique(names))
+df_cm.index.name = 'Actual'
+df_cm.columns.name = 'Predicted'
+plt.figure(figsize = (10,8))
+sns.set(font_scale=1.4)#for label size
+sns.heatmap(df_cm, cmap="Reds", annot=True,annot_kws={"size": 16}, fmt='d')
+plt.savefig('cmap.png', dpi=300)
+
+report = classification_report(y_test, y_pred, target_names=np.unique(names), zero_division=1)
+print(report)
+with open('classification_report.txt', 'w') as f:
+    f.write(report)
+
+accuracy = accuracy_score(y_test, y_pred)
+print(f"Accuracy of the SVM model on the test set: {accuracy * 100:.2f}%")
+
+q2 = q.copy()
+
+x = q2[q2['class'] != 0]
+
+X = x.iloc[:, :-1].values
+
+y = x.loc[:, 'class'].values 
+
+names = ['Alfalfa',	'Corn-notill', 'Corn-mintill',	'Corn',		'Grass-pasture','Grass-trees',
+'Grass-pasture-mowed','Hay-windrowed','Oats','Soybean-notill','Soybean-mintill',
+'Soybean-clean', 'Wheat',	'Woods',	'Buildings Grass Trees Drives',	'Stone Steel Towers']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y)
+
+svm =  SVC(C = 100, kernel = 'rbf', gamma = 'scale')
+
+svm.fit(X_train, y_train)
+
+y_pred = svm.predict(X_test)
+
+data = confusion_matrix(y_test, y_pred)
+df_cm = pd.DataFrame(data, columns=np.unique(names), index = np.unique(names))
+df_cm.index.name = 'Actual'
+df_cm.columns.name = 'Predicted'
+plt.figure(figsize = (10,8))
+sns.set(font_scale=1.4)#for label size
+sns.heatmap(df_cm, cmap="Reds", annot=True,annot_kws={"size": 16}, fmt='d')
+plt.savefig('cmap.png', dpi=300)
+
+report1 = classification_report(y_test, y_pred, target_names=np.unique(names), zero_division=1)
+print(report1)
+with open('classification_report.txt', 'w') as f:
+    f.write(report1)
+
+accuracy = accuracy_score(y_test, y_pred)
+print(f"Accuracy of the SVM model on the test set: {accuracy * 100:.2f}%")
+
+q3 = q.copy()
+
+x = q3[q3['class'] != 0]
+X = x.iloc[:, :-1].values
+y = x.loc[:, 'class'].values
+
+
+names = ['Alfalfa',	'Corn-notill', 'Corn-mintill',	'Corn',		'Grass-pasture','Grass-trees',
+'Grass-pasture-mowed','Hay-windrowed','Oats','Soybean-notill','Soybean-mintill',
+'Soybean-clean', 'Wheat',	'Woods',	'Buildings Grass Trees Drives',	'Stone Steel Towers']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y)
+
+svm =  SVC(C = 1000, kernel = 'rbf', gamma = 'scale')
+
+svm.fit(X_train, y_train)
+
+y_pred = svm.predict(X_test)
+
+data = confusion_matrix(y_test, y_pred)
+df_cm = pd.DataFrame(data, columns=np.unique(names), index = np.unique(names))
+df_cm.index.name = 'Actual'
+df_cm.columns.name = 'Predicted'
+plt.figure(figsize = (10,8))
+sns.set(font_scale=1.4)#for label size
+sns.heatmap(df_cm, cmap="Reds", annot=True,annot_kws={"size": 16}, fmt='d')
+plt.savefig('cmap.png', dpi=300)
+
+report3 = classification_report(y_test, y_pred, target_names=np.unique(names), zero_division=1)
+print(report3)
+with open('classification_report.txt', 'w') as f:
+    f.write(report3)
+
+accuracy = accuracy_score(y_test, y_pred)
+print(f"Accuracy of the SVM model on the test set: {accuracy * 100:.2f}%")
+
+q4 = q.copy()
+
+x = q4[q4['class'] != 0]
+X = x.iloc[:, :-1].values
+y = x.loc[:, 'class'].values
+
+
+names = ['Alfalfa',	'Corn-notill', 'Corn-mintill',	'Corn',		'Grass-pasture','Grass-trees',
+'Grass-pasture-mowed','Hay-windrowed','Oats','Soybean-notill','Soybean-mintill',
+'Soybean-clean', 'Wheat',	'Woods',	'Buildings Grass Trees Drives',	'Stone Steel Towers']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y)
+
+svm =  SVC(C = 10000, kernel = 'rbf', gamma = 'scale')
+
+svm.fit(X_train, y_train)
+
+y_pred = svm.predict(X_test)
+
+data = confusion_matrix(y_test, y_pred)
+df_cm = pd.DataFrame(data, columns=np.unique(names), index = np.unique(names))
+df_cm.index.name = 'Actual'
+df_cm.columns.name = 'Predicted'
+plt.figure(figsize = (10,8))
+sns.set(font_scale=1.4)#for label size
+sns.heatmap(df_cm, cmap="Reds", annot=True,annot_kws={"size": 16}, fmt='d')
+plt.savefig('cmap.png', dpi=300)
+
+accuracy = accuracy_score(y_test, y_pred)
+print(f"Accuracy of the SVM model on the test set: {accuracy * 100:.2f}%")
+
+# CREATE DECISION BOUNDARY PLOT FOR SVM
+
+clf_svm = SVC(random_state=42, C=10000, gamma='scale')
+
+# Apply PCA with 4 components on the training data
+pca = PCA(n_components=4)
+X_train_pca = pca.fit_transform(X_train)
+
+# Fit the model on the training data
+clf_svm.fit(X_train_pca, y_train)
+
+# Create a scatter plot for a random subset of the training data points
+fig, ax = plt.subplots(figsize=(10, 10))
+cmap = colors.ListedColormap(['#e41a1c', '#4daf4a'])
+subset_indices = np.random.choice(len(X_train_pca), size=min(1000, len(X_train_pca)), replace=False)
+scatter = ax.scatter(X_train_pca[subset_indices, 0], X_train_pca[subset_indices, 1], c=y_train[subset_indices], cmap=cmap, s=100, edgecolor='k', alpha=0.7)
+
+# Create a legend
+legend = ax.legend(*scatter.legend_elements(), loc='upper right')
+legend.get_texts()[0].set_text('Class 0')
+legend.get_texts()[1].set_text('Class 1')
+
+# Set labels and title
+ax.set_ylabel('Principal Component 2')
+ax.set_xlabel('Principal Component 1')
+ax.set_title('Decision surface using PCA transformed features')
+
+# Plot decision boundaries based on the SVM model using a meshgrid
+h = .02  # Step size of the meshgrid
+x_min, x_max = X_train_pca[:, 0].min() - 1, X_train_pca[:, 0].max() + 1
+y_min, y_max = X_train_pca[:, 1].min() - 1, X_train_pca[:, 1].max() + 1
+
+xx, yy = np.meshgrid(np.arange(x_min, x_max, h), np.arange(y_min, y_max, h))
+Z = clf_svm.predict(np.c_[xx.ravel(), yy.ravel()])
+
+# Put the result into a color plot
+Z = Z.reshape(xx.shape)
+ax.contourf(xx, yy, Z, alpha=0.1)
+
+# Show the plot
+plt.show()
+
+
+
